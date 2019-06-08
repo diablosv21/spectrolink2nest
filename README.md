@@ -10,10 +10,13 @@ PIN Connections:
 Connect any of these pins to ground to turn them ON
 
 3 - Zone 1
+
 4 - Zone 2
+
 5 - Zone 3
 
 7 - Air Conditioning
+
 8 - Heater
 
 Software Serial Pins
