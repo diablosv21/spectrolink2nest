@@ -1,38 +1,27 @@
 /*
-  Software serial multple serial test
-
- Receives from the hardware serial, sends to software serial.
- Receives from software serial, sends to hardware serial.
+  Spectrolink 2 Nest
 
  The circuit:
- * RX is digital pin 10 (connect to TX of other device)
- * TX is digital pin 11 (connect to RX of other device)
+ * TX is digital pin 11
 
- Note:
- Not all pins on the Mega and Mega 2560 support change interrupts,
- so only the following can be used for RX:
- 10, 11, 12, 13, 50, 51, 52, 53, 62, 63, 64, 65, 66, 67, 68, 69
+ This has been adapted to use Send Only Serial as there is no pin to listen to.
 
- Not all pins on the Leonardo and Micro support change interrupts,
- so only the following can be used for RX:
- 8, 9, 10, 11, 14 (MISO), 15 (SCK), 16 (MOSI).
-
- created back in the mists of time
- modified 25 May 2012
- by Tom Igoe
- based on Mikal Hart's example
-
- This example code is in the public domain.
+ 'enableSerial' will put the code in to a test mode for debugging.
+  This can easily be changed to still output to the Spectrolink controller at the same time.
 
  */
-#include <SoftwareSerial.h>
+// #include <SoftwareSerial.h>
+#include <SendOnlySoftwareSerial.h>
+//#include <ReceiveOnlySoftwareSerial.h>
 
-SoftwareSerial mySerial(10, 11); // RX, TX
+// SoftwareSerial mySerial(10, 11); // RX, TX
+SendOnlySoftwareSerial txSerial (11);  // Tx pin
 
-const int baudRate = 300;
+const int txBaudRate = 300;
+const int rxBaudRate = 300; // 110, 300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200, 128000 and 256000
 long lastValue = 0;
 
-const int messagePeriod = 1000;
+const int messagePeriod = 1000; // Should be 1000 for one tick per second.
 unsigned long lastMessage = 0;
 
 byte sequenceIndex = 0;
@@ -51,6 +40,12 @@ bool isOn = false;
 bool isZone1Open = true;
 bool isZone2Open = true;
 bool isZone3Open = true;
+
+bool coolTestPin = HIGH;
+bool heatTestPin = HIGH;
+bool zone1TestPin = LOW;
+bool zone2TestPin = HIGH;
+bool zone3TestPin = HIGH;
 
 const byte stateOff = 74;
 const byte stateCooling = 202;
@@ -73,17 +68,32 @@ const byte zoneOffHeat = 128;
 
 byte zoneByte = zone123;
 
-const int resetSendCount = 30;
+const int resetSendCount = 10;
 int resetSendCounter = 10;
 
-int coolPin = 7;
-int heatPin = 8;
+const int coolPin = 7;
+const int heatPin = 8;
 
-int zone1Pin = 3;
-int zone2Pin = 4;
-int zone3Pin = 5;
+const int zone1Pin = 3;
+const int zone2Pin = 4;
+const int zone3Pin = 5;
 
-bool enableSerial = false;
+const bool enableSerial = true;
+
+const int heatingCooldownTime = 180; // 3 Minutes
+int heatingCooldown = 0;
+
+const int airconCooldownTime = 30; // 30 Seconds
+int airconCooldown = 0;
+
+const int heatingMaximumRuntime = 1800; // 30 Minutes
+int heatingRuntime = 0; // 15 Minutes
+
+const int autoResetTime = 300; // Reset the heater every 5 minutes while off
+int autoReset = 0;
+
+const int hysteresisWait = 5;
+int hysteresis = 0;
 
 void setup() {
   if(enableSerial) {
@@ -96,7 +106,7 @@ void setup() {
     Serial.println("Spectrolink Emulator");
   }
   
-  mySerial.begin(baudRate);
+  txSerial.begin(txBaudRate);
 
   // Set these two pins to pullup for the heat/cool switching
   pinMode(coolPin, INPUT_PULLUP);
@@ -108,65 +118,76 @@ void setup() {
 
   // Set the starting Zone Byte as all zones are probably off.
   UpdateZoneByte();
+  Reset();
 }
 
 void loop() {
+  //ReadSpectrolinkInput();
   if(enableSerial) {
-    ReadSpectrolinkInput();
+    ReadSerialInput(); 
   }
-  //ReadSerialInput();
-  CheckPins();
 
   if(millis() - lastMessage > messagePeriod) {
+    // Tick the cooldown timers down once per second.
+    CheckPins();
+    
+    cooldownTimersTick();
+    
     SendMessage();
     lastMessage = millis();
   }
 }
 
-void ReadSpectrolinkInput() {
-  if (mySerial.available()) {
-    if(millis() - lastValue > 200) {
-      Serial.println();
+void cooldownTimersTick() {
+  if(isOn) {
+    // Track the maximum runtime for the heater
+    if(!isCool) {
+      heatingRuntime++;
     }
-    
-    int value = mySerial.read();
-    Serial.print(value);
-    Serial.write(',');
+    return;
+  }
 
-    lastValue = millis();
+  // Air con cooldown
+  if(airconCooldown > 0) {
+    airconCooldown--;
+  }
+  
+  // Heating cooldown
+  if(heatingCooldown > 0) {
+    heatingCooldown--;
+  }
+    
+  if(!isCool) {
+    // Process Auto Reset
+    if(autoReset > 0) {
+      autoReset--;
+    } else {
+      Reset();
+    }
   }
 }
+
+int readValue = 0;
+int inputMessageCounter = 0;
 
 void ReadSerialInput() {
   if(Serial.available()) {
     char command = Serial.read();
     switch (command) {
-      case 'o':
-        isOn = !isOn;
-        PrintOnState();
-        break;
       case '1':
-        isZone1Open = !isZone1Open;
-        UpdateZoneByte();
-        PrintZoneInfo(1, isZone1Open);
+        zone1TestPin = !zone1TestPin;
         break;
       case '2':
-        isZone2Open = !isZone2Open;
-        UpdateZoneByte();
-        PrintZoneInfo(2, isZone2Open);
+        zone2TestPin = !zone2TestPin;
         break;
       case '3':
-        isZone3Open = !isZone3Open;
-        UpdateZoneByte();
-        PrintZoneInfo(3, isZone3Open);
+        zone3TestPin = !zone3TestPin;
         break;
       case 'h':
-        SetHeatMode();
-        PrintOnState();
+        heatTestPin = !heatTestPin;
         break;
       case 'c':
-        SetCoolMode();
-        PrintOnState();
+        coolTestPin = !coolTestPin;
         break;
     }
   }
@@ -175,25 +196,72 @@ void ReadSerialInput() {
 void CheckPins() {
   int coolValue = digitalRead(coolPin);
   int heatValue = digitalRead(heatPin);
-  if (coolValue == LOW){
-    isCool = true;
-    isOn = true;
-    systemState = stateCooling;
-  } else if (heatValue == LOW){
-    if(!isOn) {
-      Reset(); // Perform a reset before starting the heat up. This delays start but hopefully means it works.
+  
+  if(enableSerial) {
+    coolValue = coolTestPin;
+    heatValue = heatTestPin;
+  }
+  
+  if (coolValue == LOW && airconCooldown <= 0){
+    if(hysteresis < hysteresisWait && !isOn) {
+      hysteresis++;
+    } else if(!isOn || !isCool) {
+      isCool = true;
+      isOn = true;
+      systemState = stateCooling;
+
+      if(enableSerial) {
+        PrintOnState();
+      }
     }
-    isCool = false;
-    isOn = true;
-    systemState = stateHeating;
+  } else if (heatValue == LOW && heatingCooldown <= 0 && heatingRuntime < heatingMaximumRuntime){
+    if(hysteresis < hysteresisWait && !isOn) {
+      hysteresis++;
+    } else if(!isOn || isCool) {
+      Reset(); // Perform a reset before starting the heat up. This delays start but hopefully means it works.
+      
+      isCool = false;
+      isOn = true;
+      systemState = stateHeating;
+    }
   } else {
-    isOn = false;
-    systemState = stateOff;
+    if(hysteresis < hysteresisWait && isOn && heatingRuntime < heatingMaximumRuntime) {
+      hysteresis++;
+    } else if(isOn) {
+      if(isCool) {
+        // Heater is currently on and it now being asked to turn off. Start the cooldown timer!
+        airconCooldown = airconCooldownTime;
+      } else {
+        // Heater is currently on and it now being asked to turn off. Start the cooldown timer!
+        heatingCooldown = heatingCooldownTime;
+      }
+
+      if(heatingRuntime >= heatingMaximumRuntime && enableSerial) {
+        Serial.println("Heater running too long. Turning off for periodic cool down.");
+      }
+      
+      heatingRuntime = 0;
+      isOn = false;
+      systemState = stateOff;
+      
+      PrintOnState();
+    }
   }
   
   isZone1Open = digitalRead(zone1Pin) == LOW;
   isZone2Open = digitalRead(zone2Pin) == LOW;
   isZone3Open = digitalRead(zone3Pin) == LOW;
+  
+  if(enableSerial) {
+    isZone1Open = zone1TestPin;
+    isZone2Open = zone2TestPin;
+    isZone3Open = zone3TestPin;
+  }
+
+  if(isZone1Open && isZone2Open && isZone3Open && !isCool) {
+    // The system is currently failing with all 3 zones on. Turn off Zone 1 in this situation so the system doesn't fail.
+    isZone1Open = false;
+  }
   
   UpdateZoneByte();
 }
@@ -214,6 +282,11 @@ void SetHeatMode() {
 
 void Reset() {
   resetSendCounter = resetSendCount;
+  autoReset = autoResetTime;
+
+  if(enableSerial) {
+    Serial.println("Resetting...");
+  }
 }
 
 void PrintZoneInfo(int zone, bool state) {
@@ -236,10 +309,27 @@ void PrintOnState() {
   }
   Serial.print(" - Mode: ");
   if(isCool) {
-    Serial.println("Cool");
+    Serial.print("Cool");
   } else {
-    Serial.println("Heat");
+    Serial.print("Heat");
   }
+  Serial.print(" - Zones: ");
+  if(isZone1Open) {
+    Serial.print("1");
+  } else {
+    Serial.print("-");
+  }
+  if(isZone2Open) {
+    Serial.print("2");
+  } else {
+    Serial.print("-");
+  }
+  if(isZone3Open) {
+    Serial.print("3");
+  } else {
+    Serial.print("-");
+  }
+  Serial.println();
 }
 
 void UpdateZoneByte() {
@@ -285,7 +375,7 @@ void SendMessage() {
     CreateHighMessage();
   }
   WriteOutput();
-  if(enableSerial) {
+  if(enableSerial && false) {
     WriteOutputToConsole();
   }
 }
@@ -303,6 +393,11 @@ void CreateStandardMessage() {
     output[7] = 126;
 
     resetSendCounter--;
+
+    if(enableSerial && resetSendCounter <= 0) {
+      Serial.println("Reset Complete");
+      PrintOnState();
+    }
   } else if(isOn) {
     output[2] = zoneByte;
     output[3] = 8;
@@ -654,12 +749,12 @@ void WriteOutputToConsole() {
 
 void WriteOutput() {
   // Output this to serial as proper bytes
-  mySerial.write(output[0]);
-  mySerial.write(output[1]);
-  mySerial.write(output[2]);
-  mySerial.write(output[3]);
-  mySerial.write(output[4]);
-  mySerial.write(output[5]);
-  mySerial.write(output[6]);
-  mySerial.write(output[7]);
+  txSerial.write(output[0]);
+  txSerial.write(output[1]);
+  txSerial.write(output[2]);
+  txSerial.write(output[3]);
+  txSerial.write(output[4]);
+  txSerial.write(output[5]);
+  txSerial.write(output[6]);
+  txSerial.write(output[7]);
 }
