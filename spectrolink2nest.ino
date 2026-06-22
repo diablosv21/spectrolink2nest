@@ -256,11 +256,6 @@ void CheckPins() {
     isZone3Open = zone3TestPin;
   }
 
-  if(isZone1Open && isZone2Open && isZone3Open && !isCool) {
-    // The system is currently failing with all 3 zones on. Turn off Zone 1 in this situation so the system doesn't fail.
-    isZone1Open = false;
-  }
-  
   UpdateZoneByte();
 }
 
