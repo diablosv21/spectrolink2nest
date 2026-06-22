@@ -47,7 +47,6 @@ Several guards exist because the real furnace misbehaves otherwise — treat the
 - **Cooldowns**: `heatingCooldownTime` (3 min) and `airconCooldownTime` (30 s) block re-enabling after shutoff.
 - **Max runtime**: `heatingMaximumRuntime` (30 min) forces the heater off for a cool-down period.
 - **Hysteresis** (`hysteresisWait`): input must persist `hysteresisWait` ticks before a state change commits, debouncing the thermostat.
-- **All-zones-heating guard** ([CheckPins:261](spectrolink2nest.ino#L261)): with all 3 zones open in heat mode the system fails, so Zone 1 is force-closed.
 
 ## Conventions when editing
 
